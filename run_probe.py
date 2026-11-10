@@ -272,6 +272,25 @@ def run_probe(
         client.close()
 
 
+def _auto_probe_id(target_host: str, role: str) -> int:
+    """Auto-derive a unique, non-colliding probe ID based on role and host IP."""
+    if role == "server":
+        return 2
+    if role == "router":
+        return 10
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect((target_host if target_host not in ("127.0.0.1", "localhost") else "8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+        last_octet = int(local_ip.split(".")[-1])
+        if last_octet in (2, 10):
+            return last_octet + 100
+        return max(1, min(254, last_octet))
+    except Exception:
+        import zlib
+        return (zlib.crc32(platform.node().encode()) % 200) + 11
+
+
 def main() -> None:
     """CLI entry point for running a probe."""
     parser = argparse.ArgumentParser(
@@ -279,10 +298,17 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
+        "--role",
+        type=str,
+        choices=["client", "router", "server"],
+        default="client",
+        help="Node role in topology: client (default), router (probe 10), or server (probe 2)",
+    )
+    parser.add_argument(
         "--probe-id",
         type=int,
-        required=True,
-        help="Probe identity: 1=client side, 2=server side, 3+=additional clients",
+        default=None,
+        help="Explicit probe ID (if omitted, auto-derived from role/IP to prevent lab collisions)",
     )
     parser.add_argument(
         "--server",
@@ -311,8 +337,10 @@ def main() -> None:
         sys.exit(1)
 
     host, port = parts[0], int(parts[1])
+    probe_id = args.probe_id if args.probe_id is not None else _auto_probe_id(host, args.role)
+
     run_probe(
-        probe_id=args.probe_id,
+        probe_id=probe_id,
         host=host,
         port=port,
         iface=args.iface,
