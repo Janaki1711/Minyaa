@@ -512,7 +512,11 @@ if (typeof window !== 'undefined') {
 
             const clientLabel = clientIdx === 1 ? 'Arch Linux Host (Probe 3)' : 'VM2 Client (Probe 1)'
             const dropNote = isDrop
-              ? `Dropped on Wire: ${clientLabel} ──✖──> Server Hub (Probe 2)`
+              ? (msg.drop_link === 'link_2'
+                  ? `Dropped on Link 2: Router ──✖──> Server Hub (Probe 2)`
+                  : msg.drop_link === 'link_1'
+                    ? `Dropped on Link 1: ${clientLabel} ──✖──> Router`
+                    : `Dropped on Wire: ${clientLabel} ──✖──> Server Hub (Probe 2)`)
               : msg.fingerprint
                 ? `fp: ${msg.fingerprint}`
                 : undefined

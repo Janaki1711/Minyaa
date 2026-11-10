@@ -130,35 +130,44 @@ def get_hub() -> CorrelationHub:
             client_id = 0 if client_probe_id == 1 else (1 if client_probe_id == 3 else max(0, client_probe_id - 1))
 
             client_ip = None
+            server_ip = None
             if _hub and hasattr(_hub, "connected_probes"):
                 for p in _hub.connected_probes.values():
                     if p.get("probe_id") == client_probe_id:
                         client_ip = p.get("ip")
-                        break
-            # If IP is the Windows portproxy gateway (192.168.130.1) or None, map probe_id 3 to Arch Host
-            if not client_ip or client_ip == "192.168.130.1":
-                client_ip = "10.108.157.186" if client_probe_id == 3 else ("192.168.130.128" if client_probe_id == 1 else "10.108.157.186")
+                    elif p.get("probe_id") == 2:
+                        server_ip = p.get("ip")
+
+            # Fallback for client IP if unknown or local gateway
+            if not client_ip or client_ip in ("192.168.130.1", "127.0.0.1"):
+                client_ip = "10.108.157.186" if client_probe_id == 3 else ("192.168.130.128" if client_probe_id == 1 else (client_ip or "10.108.157.186"))
+
+            if not server_ip or server_ip == "127.0.0.1":
+                server_ip = "192.168.130.129"
 
             proto = getattr(rec, "proto", "TCP")
+            drop_link = getattr(rec, "drop_link", None)
 
             try:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
                     asyncio.create_task(_broadcast({
-                        "type":        "correlation",
-                        "match_state": rec.match_state,
-                        "fingerprint": f"0x{rec.fingerprint:016X}",
-                        "delay_ms":    delay_ms,
-                        "t1_ns":       rec.t1_ns,
-                        "t2_ns":       rec.t2_ns,
-                        "probe1_seq":  rec.probe1_seq,
-                        "probe2_seq":  rec.probe2_seq,
-                        "probe_id":    client_probe_id,
-                        "client_id":   client_id,
-                        "src_ip":      client_ip,
-                        "dst_ip":      "192.168.130.129",
-                        "proto":       proto,
-                        "flags":       rec.flags,
+                        "type":            "correlation",
+                        "match_state":     rec.match_state,
+                        "fingerprint":     f"0x{rec.fingerprint:016X}",
+                        "delay_ms":        delay_ms,
+                        "t1_ns":           rec.t1_ns,
+                        "t2_ns":           rec.t2_ns,
+                        "probe1_seq":      rec.probe1_seq,
+                        "probe2_seq":      rec.probe2_seq,
+                        "probe_id":        client_probe_id,
+                        "client_id":       client_id,
+                        "src_ip":          client_ip,
+                        "dst_ip":          server_ip,
+                        "proto":           proto,
+                        "drop_link":       drop_link,
+                        "router_observed": getattr(rec, "router_observed", False),
+                        "flags":           rec.flags,
                     }))
             except RuntimeError:
                 pass  # no event loop running (unit tests)

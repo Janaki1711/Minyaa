@@ -24,13 +24,19 @@ export function HeaderBar() {
   const p2Online = probes.probe2_connected || demoMode
 
   const clientProbes = (probes.active_clients || []).filter((p) => p.probe_id !== 2)
-  const hasArch = clientProbes.some((p) => p.ip.startsWith('10.108.') || p.probe_id === 3)
-  const hasVM2 = clientProbes.some((p) => p.ip.startsWith('192.168.130.128') || p.probe_id === 1)
+  const archProbe = clientProbes.find((p) => p.probe_id === 3)
+  const vm2Probe = clientProbes.find((p) => p.probe_id === 1)
+  const hasArch = archProbe != null
+  const hasVM2 = vm2Probe != null || probes.probe1_connected
+
+  const archIp = archProbe?.ip && archProbe.ip !== '192.168.130.1' ? archProbe.ip : '10.108.157.186'
+  const vm2Ip = probes.probe1_ip || vm2Probe?.ip || '192.168.130.128'
+  const serverIp = probes.probe2_ip && probes.probe2_ip !== '127.0.0.1' ? probes.probe2_ip : '192.168.130.129'
 
   const quickFilters = [
     { label: 'All Traffic', filter: '' },
-    { label: 'Arch Host (10.108.157.186)', filter: 'ip.src == 10.108.157.186 || ip.dst == 10.108.157.186' },
-    { label: 'VM2 Client (192.168.130.128)', filter: 'ip.src == 192.168.130.128 || ip.dst == 192.168.130.128' },
+    { label: 'Arch Host', filter: `ip.src == ${archIp} || ip.dst == ${archIp}` },
+    { label: 'VM2 Client', filter: `ip.src == ${vm2Ip} || ip.dst == ${vm2Ip}` },
     { label: 'HTTP Only', filter: 'http' },
     { label: 'DNS Queries', filter: 'dns' },
     { label: 'Ping (ICMP)', filter: 'icmp' },
@@ -67,21 +73,21 @@ export function HeaderBar() {
           {/* Probe 1 (VM2 Client) */}
           <ProbeIndicator
             label="Probe 1 (VM2)"
-            ip="192.168.130.128"
+            ip={vm2Ip}
             online={p1Online || hasVM2}
             color="blue"
           />
           {/* Probe 3 (Arch Host) */}
           <ProbeIndicator
             label="Probe 3 (Arch Host)"
-            ip="10.108.157.186"
+            ip={archIp}
             online={hasArch}
             color="emerald"
           />
           {/* Probe 2 (Server Hub) */}
           <ProbeIndicator
             label="Probe 2 (Server)"
-            ip="192.168.130.129"
+            ip={serverIp}
             online={p2Online}
             color="indigo"
           />

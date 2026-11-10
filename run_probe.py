@@ -22,6 +22,8 @@ from backend.models import Packet
 
 SEP = "─" * 60
 _HEARTBEAT_INTERVAL_S = 5.0
+_BATCH_MAX_RECORDS = 50            # 50 records * 24 bytes = 1,200B (fits in 1.5KB MTU)
+_BATCH_FLUSH_INTERVAL_S = 0.020    # 20 ms dual-trigger timer flush
 
 
 def _warn_if_loopback(host: str, probe_id: int) -> None:
@@ -82,11 +84,31 @@ def run_probe(
     last_hb = time.time()
     last_packet_time = time.time()
 
+    batch_buffer = bytearray()
+    batch_count = 0
+    last_flush_time = time.time()
+
+    def flush_batch() -> None:
+        nonlocal batch_count, last_flush_time, sent
+        if batch_count == 0:
+            return
+        payload_to_send = bytes(batch_buffer)
+        ok = client.send_batch(payload_to_send)
+        if not ok:
+            print(f"\n  [Probe {probe_id}] Connection lost, reconnecting...")
+            client.reconnect()
+            client.send_batch(payload_to_send)
+        sent += batch_count
+        batch_buffer.clear()
+        batch_count = 0
+        last_flush_time = time.time()
+
     try:
         while True:
             # Idle keepalive heartbeat
             now = time.time()
             if now - last_packet_time >= _HEARTBEAT_INTERVAL_S and now - last_hb >= _HEARTBEAT_INTERVAL_S:
+                flush_batch()
                 ok = client.send_heartbeat(seq=seq)
                 if not ok:
                     print(f"\n  [Probe {probe_id}] Reconnecting...")
@@ -200,19 +222,17 @@ def run_probe(
                     continue
 
                 wire = telemetry.pack()
-
-                ok = client.send(wire)
-                if not ok:
-                    print(f"\n  [Probe {probe_id}] Connection lost, reconnecting...")
-                    client.reconnect()
-                    client.send(wire)
-
-                sent += 1
+                batch_buffer.extend(wire)
+                batch_count += 1
                 seq += 1
                 last_packet_time = time.time()
 
+                # Condition 1: Batch buffer is full (50 records = 1,200B) -> flush immediately
+                if batch_count >= _BATCH_MAX_RECORDS:
+                    flush_batch()
+
                 # Print sample output every 5th packet
-                if sent % 5 == 1:
+                if seq % 5 == 1:
                     layers = " > ".join(l.name for l in decoded.layers)
                     fp_short = f"0x{decoded.fingerprint.value:016X}"
                     info = ""
@@ -230,7 +250,11 @@ def run_probe(
                             break
                         if layer.name == "TCP":
                             info = f"{layer.fields.get('src_port','')} → {layer.fields.get('dst_port','')}"
-                    print(f"  {sent:<8} {layers[:38]:<38} {fp_short:<20} {info}")
+                    print(f"  {seq:<8} {layers[:38]:<38} {fp_short:<20} {info}")
+
+            # Condition 2: Timer deadline expired (20ms) with pending records -> flush immediately
+            if batch_count > 0 and (time.time() - last_flush_time >= _BATCH_FLUSH_INTERVAL_S):
+                flush_batch()
 
     except KeyboardInterrupt:
         print(f"\n\n{SEP}")
@@ -242,6 +266,9 @@ def run_probe(
         print(f"{SEP}\n")
 
     finally:
+        flush_batch()
+        if hasattr(capturer, "close"):
+            capturer.close()
         client.close()
 
 

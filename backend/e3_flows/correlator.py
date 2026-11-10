@@ -54,6 +54,8 @@ class _InFlight:
     captured_len: int
     proto_code: int = 1
     alive: bool = True
+    router_ts: int | None = None
+    router_probe_id: int | None = None
 
 
 class CorrelationHub:
@@ -65,11 +67,13 @@ class CorrelationHub:
         on_record: Callable[[CorrelationRecord], None] | None = None,
         probe1_id: int = 1,
         probe2_id: int = 2,
+        router_probe_id: int = 10,
     ) -> None:
         self._timeout_ns = timeout_ms * 1_000_000
         self._on_record = on_record
         self._probe1_id = probe1_id
         self._probe2_id = probe2_id
+        self._router_probe_id = router_probe_id
 
         # Hash tables for in-flight pairing
         self._table: dict[int, _InFlight] = {}      # Ingress clients waiting for server
@@ -121,6 +125,9 @@ class CorrelationHub:
                     flags=flags,
                     client_probe_id=entry.probe_id,
                     proto_code=p_code,
+                    router_observed=entry.router_ts is not None,
+                    router_ts=entry.router_ts,
+                    drop_link=None,
                 )
                 self.stats["matched"] += 1
                 self._emit(rec)
@@ -146,6 +153,31 @@ class CorrelationHub:
             self._compact_heap()
             return None
 
+        elif pid == self._router_probe_id:
+            # Intermediate Router observation (Probe 10 / R): track transit between Link 1 and Link 2
+            entry = self._table.get(fp)
+            if entry is not None and entry.alive:
+                entry.router_ts = ts
+                entry.router_probe_id = pid
+                return None
+
+            deadline = ts + self._timeout_ns
+            entry = _InFlight(
+                fingerprint=fp,
+                probe_id=pid,
+                timestamp_ns=ts,
+                seq=telemetry.seq,
+                deadline_ns=deadline,
+                captured_len=telemetry.captured_len,
+                proto_code=proto_code,
+                router_ts=ts,
+                router_probe_id=pid,
+            )
+            self._table[fp] = entry
+            heapq.heappush(self._heap, (deadline, fp))
+            self._compact_heap()
+            return None
+
         else:
             # Ingress client observation (Probe 1, Probe 3, etc.)
             entry2 = self._table_p2.get(fp)
@@ -165,12 +197,22 @@ class CorrelationHub:
                     flags=flags,
                     client_probe_id=pid,
                     proto_code=p_code,
+                    router_observed=entry2.router_ts is not None,
+                    router_ts=entry2.router_ts,
+                    drop_link=None,
                 )
                 self.stats["matched"] += 1
                 self._emit(rec)
                 return rec
 
-            if fp in self._table:
+            existing = self._table.get(fp)
+            if existing is not None and existing.alive:
+                if existing.probe_id == self._router_probe_id:
+                    # Router saw packet first; bind client info
+                    existing.probe_id = pid
+                    existing.timestamp_ns = ts
+                    existing.seq = telemetry.seq
+                    return None
                 self.stats["duplicate_t2"] += 1
                 return None
 
@@ -380,6 +422,11 @@ class CorrelationHub:
             if entry is not None and entry.alive:
                 entry.alive = False
                 del self._table[fp]
+                # Dynamic Link Drop Localization:
+                # If router saw the packet before expiration -> dropped on Link 2 (Router -> Server)
+                # If router never saw the packet -> dropped on Link 1 (Client -> Router)
+                drop_link = "link_2" if entry.router_ts is not None else "link_1"
+
                 rec = self._make_record(
                     fp=fp,
                     p1_ts=entry.timestamp_ns,
@@ -391,6 +438,9 @@ class CorrelationHub:
                     flags=0,
                     client_probe_id=entry.probe_id,
                     proto_code=entry.proto_code,
+                    router_observed=entry.router_ts is not None,
+                    router_ts=entry.router_ts,
+                    drop_link=drop_link,
                 )
                 self.stats["unmatched"] += 1
                 self._emit(rec)
@@ -441,6 +491,9 @@ class CorrelationHub:
         flags: int,
         client_probe_id: int = 1,
         proto_code: int = 1,
+        router_observed: bool = False,
+        router_ts: int | None = None,
+        drop_link: str | None = None,
     ) -> CorrelationRecord:
         """Construct a CorrelationRecord with delay and client attribution."""
         delay_ns = None
@@ -464,6 +517,9 @@ class CorrelationHub:
             probe1_seq=p1_seq,
             probe2_seq=p2_seq,
             proto=proto,
+            router_observed=router_observed,
+            router_ts=router_ts,
+            drop_link=drop_link,
         )
         object.__setattr__(rec, "client_probe_id", client_probe_id)
         return rec

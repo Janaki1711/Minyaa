@@ -285,6 +285,29 @@ class AFPacketCapture:
             )
         self.iface = _pick_linux_interface(iface)
         self.timeout = timeout
+        self._sock: socket.socket | None = None
+
+    def _get_sock(self) -> socket.socket:
+        """Get or lazily create a persistent AF_PACKET raw socket.
+
+        Maintaining a persistent raw socket prevents kernel socket drop churn
+        where frames are dropped between capture bursts.
+        """
+        if self._sock is None:
+            sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, _ETH_P_ALL)
+            sock.bind((self.iface, 0))
+            _set_promisc(sock, self.iface)
+            self._sock = sock
+        return self._sock
+
+    def close(self) -> None:
+        """Close persistent raw socket."""
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
 
     # Public API
 
@@ -305,36 +328,36 @@ class AFPacketCapture:
     # Internal capture loop
 
     def _iter_capture(self, count: int) -> Iterator[Packet]:
-        sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, _ETH_P_ALL)
         try:
-            sock.bind((self.iface, 0))
-            _set_promisc(sock, self.iface)
-            index = 0
-            burst_timeout = float(self.timeout) if self.timeout else 1.0
-            deadline = time.time() + burst_timeout
-            while index < count:
-                time_left = deadline - time.time()
-                if time_left <= 0:
+            sock = self._get_sock()
+        except OSError as exc:
+            logger.warning("Failed to open AF_PACKET socket on %s: %s", self.iface, exc)
+            return
+
+        index = 0
+        burst_timeout = float(self.timeout) if self.timeout else 0.05
+        deadline = time.time() + burst_timeout
+        while index < count:
+            time_left = deadline - time.time()
+            if time_left <= 0:
+                break
+            ready, _, _ = select.select([sock], [], [], min(max(time_left, 0.0), 0.05))
+            if not ready:
+                if time.time() >= deadline:
                     break
-                ready, _, _ = select.select([sock], [], [], min(max(time_left, 0.0), 0.2))
-                if not ready:
-                    if time.time() >= deadline:
-                        break
-                    continue
-                try:
-                    raw, _ = sock.recvfrom(65_535)
-                except OSError:
-                    break
-                ts = time.time()
-                yield Packet(
-                    index=index,
-                    timestamp=ts,
-                    length=len(raw),
-                    raw_bytes=raw,
-                )
-                index += 1
-        finally:
-            sock.close()
+                continue
+            try:
+                raw, _ = sock.recvfrom(65_535)
+            except OSError:
+                break
+            ts = time.time()
+            yield Packet(
+                index=index,
+                timestamp=ts,
+                length=len(raw),
+                raw_bytes=raw,
+            )
+            index += 1
 
 
 # Factory: select platform capturer

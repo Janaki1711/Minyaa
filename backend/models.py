@@ -249,6 +249,9 @@ class CorrelationRecord:
     probe1_seq: int | None = None
     probe2_seq: int | None = None
     proto: str = "TCP"
+    router_observed: bool = False
+    router_ts: int | None = None
+    drop_link: str | None = None
     created_at_ns: int = field(default_factory=time.time_ns)
 
     @property

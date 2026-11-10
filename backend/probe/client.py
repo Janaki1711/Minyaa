@@ -67,6 +67,9 @@ class TelemetryClient:
                 sock.settimeout(10)
                 sock.connect((self.host, self.port))
                 sock.settimeout(None)
+                # Hardware/OS optimization: Disable Nagle's algorithm (TCP_NODELAY)
+                # to prevent up to 40ms delayed-ACK stall on batched transmissions.
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 sock.sendall(build_preamble(self.probe_id))
                 self._sock = sock
                 logger.info(
@@ -96,19 +99,23 @@ class TelemetryClient:
             f"Is the server running? Start it with: python run_e3_server.py"
         )
 
-    def send(self, wire: bytes) -> bool:
-        """Send one 24-byte record. Returns False if connection was lost.
+    def send_batch(self, batch_bytes: bytes) -> bool:
+        """Send a batch of multiple 24-byte telemetry records in one TCP sendall().
 
-        Caller should reconnect and retry on False.
+        Returns False if connection was lost (caller should reconnect and retry).
         """
-        if self._sock is None:
+        if self._sock is None or not batch_bytes:
             return False
         try:
-            self._sock.sendall(wire)
+            self._sock.sendall(batch_bytes)
             return True
         except (BrokenPipeError, ConnectionResetError, OSError):
             self._sock = None
             return False
+
+    def send(self, wire: bytes) -> bool:
+        """Send one 24-byte record. Returns False if connection was lost."""
+        return self.send_batch(wire)
 
     def send_heartbeat(self, seq: int = 0) -> bool:
         """Send a type-3 heartbeat record to keep the probe marked 'online'.

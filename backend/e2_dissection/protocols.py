@@ -226,15 +226,20 @@ def udp(data: bytes) -> tuple[Layer, bytes | None, Dispatch | None]:
 
 
 def icmp(data: bytes) -> tuple[Layer, bytes | None, Dispatch | None]:
-    """ICMP / ICMPv6 - type and code only; the rest stays undecoded."""
+    """ICMP / ICMPv6 - type, code, and optional Echo ID/Seq for ping disambiguation."""
     if len(data) < 4:
         return _truncated("ICMP", data)
     icmp_type, code, checksum = struct.unpack_from("!BBH", data, 0)
-    layer = Layer(
-        "ICMP",
-        {"type": icmp_type, "code": code, "checksum": checksum},
-        undecoded_bytes=data[4:],
-    )
+    fields: dict[str, object] = {"type": icmp_type, "code": code, "checksum": checksum}
+    # RFC 792 / RFC 4443: Echo Request (8, 128) and Echo Reply (0, 129) carry Identifier and Sequence
+    if len(data) >= 8 and icmp_type in (0, 8, 128, 129):
+        icmp_id, seq = struct.unpack_from("!HH", data, 4)
+        fields["id"] = icmp_id
+        fields["seq"] = seq
+        undecoded = data[8:]
+    else:
+        undecoded = data[4:]
+    layer = Layer("ICMP", fields, undecoded_bytes=undecoded)
     return layer, None, None
 
 
@@ -482,5 +487,11 @@ def _transport_invariants(layer_map: dict[str, Layer]) -> list[tuple[str, object
         fields = layer_map[protocol].fields
         if fields.get("malformed") or fields.get("truncated"):
             return []
-        return [(f"{protocol.lower()}.{name}", fields.get(name, 0)) for name in names]
+        items = [(f"{protocol.lower()}.{name}", fields.get(name, 0)) for name in names]
+        if protocol == "ICMP":
+            if "id" in fields:
+                items.append(("icmp.id", fields["id"]))
+            if "seq" in fields:
+                items.append(("icmp.seq", fields["seq"]))
+        return items
     return []
