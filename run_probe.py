@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import platform
+import socket
 import sys
 import os
 import time
